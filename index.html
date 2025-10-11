@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapa de Escolas do Brasil (CSV local + Municípios GeoJSON)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <!-- MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <!-- PapaParse -->
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+    #toolbar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: .5rem; padding: .75rem; border-bottom: 1px solid #ddd;
+      font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
+    }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; padding: .5rem .75rem; }
+    fieldset legend { font-weight: 600; padding: 0 .25rem; }
+    label { display: block; margin: .25rem 0; }
+    select, input[type="text"] { width: 100%; padding: .35rem .5rem; border: 1px solid #ccc; border-radius: 6px; }
+    select[multiple] { min-height: 6.5rem; }
+    #map { width: 100%; height: 100%; }
+    #progress { font-size: 12px; color: #555; align-self: center; }
+    .notice { color: #666; font-size: 12px; }
+    .btn { display:inline-block; padding:.4rem .6rem; border-radius:8px; border:1px solid #ccc; background:#f8f8f8; cursor:pointer; }
+    .btn:hover { background:#f0f0f0; }
+    .popup table { border-collapse: collapse; width: 100%; }
+    .popup th, .popup td { border-bottom: 1px solid #eee; padding: .25rem .35rem; text-align: left; vertical-align: top; }
+    .popup th { white-space: nowrap; width: 1%; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <fieldset>
+      <legend>1) Carregar dados</legend>
+      <label>CSV de escolas:
+        <input type="file" id="csvFile" accept=".csv,text/csv" />
+      </label>
+      <div class="notice">O CSV deve conter colunas <em>Latitude</em> e <em>Longitude</em>.</div>
+      <div style="margin-top:.35rem; display:flex; gap:.5rem; flex-wrap:wrap;">
+        <button class="btn" id="exportCsv" disabled>Exportar filtrados (CSV)</button>
+        <div id="counts" class="notice"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>2) Municípios (opcional)</legend>
+      <label>GeoJSON de municípios:
+        <input type="file" id="geoFile" accept=".json,.geojson,application/geo+json,application/json" />
+      </label>
+      <div class="notice">Use um arquivo do repositório <code>brasil-municipios-geojson</code>.</div>
+      <div style="display:flex; gap:.5rem; margin-top:.25rem; flex-wrap:wrap;">
+        <button class="btn" id="toggleMun">Mostrar/Ocultar</button>
+        <label style="display:flex; align-items:center; gap:.35rem;">
+          <input type="checkbox" id="munLabels" />
+          Mostrar nomes
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Filtros (básicos)</legend>
+      <label>UF
+        <select id="filterUF"><option value="">(todas)</option></select>
+      </label>
+      <label>Município
+        <select id="filterMunicipio"><option value="">(todos)</option></select>
+      </label>
+      <label>Categoria Administrativa
+        <select id="filterCategoriaAdm"><option value="">(todas)</option></select>
+      </label>
+      <label>Localização
+        <select id="filterLocalizacao"><option value="">(todas)</option></select>
+      </label>
+      <label>Localidade Diferenciada
+        <select id="filterLocDif"><option value="">(todas)</option></select>
+      </label>
+      <label>Busca (texto livre)
+        <input type="text" id="filterText" placeholder="buscar em todas as colunas…" />
+      </label>
+      <div style="display:flex; gap:.5rem; margin-top:.25rem; flex-wrap:wrap;">
+        <button class="btn" id="applyFilters">Aplicar</button>
+        <button class="btn" id="clearFilters">Limpar</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Filtros (avançados)</legend>
+      <label>Restrição de Atendimento
+        <select id="filterRestricao"><option value="">(todas)</option></select>
+      </label>
+      <label>Dependência Administrativa
+        <select id="filterDepAdm"><option value="">(todas)</option></select>
+      </label>
+      <label>Categoria Escola Privada
+        <select id="filterCatPriv"><option value="">(todas)</option></select>
+      </label>
+      <label>Conveniada Poder Público
+        <select id="filterConveniada"><option value="">(todas)</option></select>
+      </label>
+      <label>Regulamentação pelo Conselho de Educação
+        <select id="filterRegul"><option value="">(todas)</option></select>
+      </label>
+      <label>Porte da Escola
+        <select id="filterPorte"><option value="">(todos)</option></select>
+      </label>
+      <label>Etapas e Modalidade (multi)
+        <select id="filterEtapas" multiple></select>
+      </label>
+      <label>Outras Ofertas (multi)
+        <select id="filterOfertas" multiple></select>
+      </label>
+    </fieldset>
+
+    <div id="progress"></div>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<script>
+  // --- Column map (Portuguese headers)
+  const COLS = {
+    restricao: "Restrição de Atendimento",
+    escola: "Escola",
+    inep: "Código INEP",
+    uf: "UF",
+    municipio: "Município",
+    localizacao: "Localização",
+    locDif: "Localidade Diferenciada",
+    catAdm: "Categoria Administrativa",
+    endereco: "Endereço",
+    telefone: "Telefone",
+    depAdm: "Dependência Administrativa",
+    catPriv: "Categoria Escola Privada",
+    conveniada: "Conveniada Poder Público",
+    regul: "Regulamentação pelo Conselho de Educação",
+    porte: "Porte da Escola",
+    etapas: "Etapas e Modalidade de Ensino Oferecidas",
+    ofertas: "Outras Ofertas Educacionais",
+    lat: "Latitude",
+    lon: "Longitude",
+  };
+
+  // --- Map ---
+  const map = L.map('map', { preferCanvas: true }).setView([-14.2350, -51.9253], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
+  const cluster = L.markerClusterGroup({
+    chunkedLoading: true, chunkDelay: 50, chunkInterval: 200,
+    disableClusteringAtZoom: 15, spiderfyOnMaxZoom: true, showCoverageOnHover: false
+  });
+  map.addLayer(cluster);
+
+  // --- State ---
+  let allRows = [];         // all parsed CSV rows
+  let allMarkers = [];      // marker or null aligned with allRows
+  let filteredIdx = [];     // indices into allRows/allMarkers
+  let geoLayer = null, geoLabels = null, geoVisible = true;
+
+  // --- UI ---
+  const progressEl = document.getElementById('progress');
+  const countsEl = document.getElementById('counts');
+  const exportBtn = document.getElementById('exportCsv');
+
+  const csvFile = document.getElementById('csvFile');
+  const geoFile = document.getElementById('geoFile');
+  const btnToggleMun = document.getElementById('toggleMun');
+  const chkMunLabels = document.getElementById('munLabels');
+
+  const selUF = document.getElementById('filterUF');
+  const selMunicipio = document.getElementById('filterMunicipio');
+  const selCategoriaAdm = document.getElementById('filterCategoriaAdm');
+  const selLocalizacao = document.getElementById('filterLocalizacao');
+  const selLocDif = document.getElementById('filterLocDif');
+  const txtSearch = document.getElementById('filterText');
+
+  const selRestricao = document.getElementById('filterRestricao');
+  const selDepAdm = document.getElementById('filterDepAdm');
+  const selCatPriv = document.getElementById('filterCatPriv');
+  const selConveniada = document.getElementById('filterConveniada');
+  const selRegul = document.getElementById('filterRegul');
+  const selPorte = document.getElementById('filterPorte');
+  const selEtapas = document.getElementById('filterEtapas');
+  const selOfertas = document.getElementById('filterOfertas');
+
+  const btnApply = document.getElementById('applyFilters');
+  const btnClear = document.getElementById('clearFilters');
+
+  function setProgress(t){ progressEl.textContent = t || ''; }
+  function esc(v){ return v == null ? '' : String(v); }
+
+  function formatPopup(row) {
+    const rows = Object.values(COLS).map(label => {
+      return `<tr><th>${label}</th><td>${esc(row[label])}</td></tr>`;
+    }).join('');
+    return `<div class="popup"><table>${rows}</table></div>`;
+  }
+
+  function buildMarker(row, idx) {
+    const lat = parseFloat(String(row[COLS.lat] || "").replace(',', '.'));
+    const lon = parseFloat(String(row[COLS.lon] || "").replace(',', '.'));
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+    const m = L.marker([lat, lon], { title: row[COLS.escola] || '' });
+    m.bindPopup(formatPopup(row), { maxWidth: 480 });
+    m._rowIndex = idx;
+    return m;
+  }
+
+  // Helpers for building select options
+  function fillOptions(sel, values, {multiple=false, placeholder="(todas)"} = {}) {
+    const prev = multiple ? Array.from(sel.selectedOptions).map(o=>o.value) : sel.value;
+    if (multiple) {
+      sel.innerHTML = Array.from(values).sort().map(v => `<option>${v}</option>`).join('');
+    } else {
+      sel.innerHTML = `<option value="">${placeholder}</option>` + Array.from(values).sort().map(v => `<option>${v}</option>`).join('');
+    }
+    if (multiple) {
+      for (const v of prev) {
+        const opt = Array.from(sel.options).find(o => o.value === v);
+        if (opt) opt.selected = true;
+      }
+    } else if (prev && values.has(prev)) {
+      sel.value = prev;
+    }
+  }
+
+  function tokenSetFromCSVField(s) {
+    // Split comma-separated lists (etapas/ofertas)
+    if (!s) return [];
+    return String(s).split(',').map(t => t.trim()).filter(Boolean);
+  }
+
+  function rebuildDropdowns() {
+    const sets = {
+      uf: new Set(), municipio: new Set(), catAdm: new Set(),
+      localizacao: new Set(), locDif: new Set(),
+      restricao: new Set(), depAdm: new Set(), catPriv: new Set(),
+      conveniada: new Set(), regul: new Set(), porte: new Set(),
+      etapas: new Set(), ofertas: new Set(),
+    };
+
+    for (const r of allRows) {
+      if (r[COLS.uf]) sets.uf.add(r[COLS.uf]);
+      if (r[COLS.municipio]) sets.municipio.add(r[COLS.municipio]);
+      if (r[COLS.catAdm]) sets.catAdm.add(r[COLS.catAdm]);
+      if (r[COLS.localizacao]) sets.localizacao.add(r[COLS.localizacao]);
+      if (r[COLS.locDif]) sets.locDif.add(r[COLS.locDif]);
+
+      if (r[COLS.restricao]) sets.restricao.add(r[COLS.restricao]);
+      if (r[COLS.depAdm]) sets.depAdm.add(r[COLS.depAdm]);
+      if (r[COLS.catPriv]) sets.catPriv.add(r[COLS.catPriv]);
+      if (r[COLS.conveniada]) sets.conveniada.add(r[COLS.conveniada]);
+      if (r[COLS.regul]) sets.regul.add(r[COLS.regul]);
+      if (r[COLS.porte]) sets.porte.add(r[COLS.porte]);
+
+      tokenSetFromCSVField(r[COLS.etapas]).forEach(v => sets.etapas.add(v));
+      tokenSetFromCSVField(r[COLS.ofertas]).forEach(v => sets.ofertas.add(v));
+    }
+
+    fillOptions(selUF, sets.uf);
+    fillOptions(selMunicipio, sets.municipio, {placeholder:"(todos)"});
+    fillOptions(selCategoriaAdm, sets.catAdm);
+    fillOptions(selLocalizacao, sets.localizacao);
+    fillOptions(selLocDif, sets.locDif);
+
+    fillOptions(selRestricao, sets.restricao);
+    fillOptions(selDepAdm, sets.depAdm);
+    fillOptions(selCatPriv, sets.catPriv);
+    fillOptions(selConveniada, sets.conveniada);
+    fillOptions(selRegul, sets.regul);
+    fillOptions(selPorte, sets.porte);
+
+    fillOptions(selEtapas, sets.etapas, {multiple:true});
+    fillOptions(selOfertas, sets.ofertas, {multiple:true});
+  }
+
+  function getMultiSelected(sel) {
+    return Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);
+  }
+
+  function rowMatchesFilters(row) {
+    const uf = selUF.value.trim();
+    const mun = selMunicipio.value.trim();
+    const cadm = selCategoriaAdm.value.trim();
+    const loc = selLocalizacao.value.trim();
+    const locdif = selLocDif.value.trim();
+
+    const restr = selRestricao.value.trim();
+    const dep = selDepAdm.value.trim();
+    const cpriv = selCatPriv.value.trim();
+    const conv = selConveniada.value.trim();
+    const reg = selRegul.value.trim();
+    const porte = selPorte.value.trim();
+
+    const etapasSel = getMultiSelected(selEtapas);
+    const ofertasSel = getMultiSelected(selOfertas);
+
+    const q = txtSearch.value.trim().toLowerCase();
+
+    if (uf && row[COLS.uf] !== uf) return false;
+    if (mun && row[COLS.municipio] !== mun) return false;
+    if (cadm && row[COLS.catAdm] !== cadm) return false;
+    if (loc && row[COLS.localizacao] !== loc) return false;
+    if (locdif && row[COLS.locDif] !== locdif) return false;
+
+    if (restr && row[COLS.restricao] !== restr) return false;
+    if (dep && row[COLS.depAdm] !== dep) return false;
+    if (cpriv && row[COLS.catPriv] !== cpriv) return false;
+    if (conv && row[COLS.conveniada] !== conv) return false;
+    if (reg && row[COLS.regul] !== reg) return false;
+    if (porte && row[COLS.porte] !== porte) return false;
+
+    if (etapasSel.length) {
+      const tokens = new Set(tokenSetFromCSVField(row[COLS.etapas]));
+      // require ALL selected etapas to be present
+      for (const t of etapasSel) if (!tokens.has(t)) return false;
+    }
+    if (ofertasSel.length) {
+      const tokens = new Set(tokenSetFromCSVField(row[COLS.ofertas]));
+      for (const t of ofertasSel) if (!tokens.has(t)) return false;
+    }
+
+    if (q) {
+      let hit = false;
+      for (const k in row) {
+        const v = row[k];
+        if (v != null && String(v).toLowerCase().includes(q)) { hit = true; break; }
+      }
+      if (!hit) return false;
+    }
+
+    return true;
+  }
+
+  function applyFilters() {
+    filteredIdx = [];
+    for (let i = 0; i < allRows.length; i++) {
+      if (!allMarkers[i]) continue; // only points with coords
+      if (rowMatchesFilters(allRows[i])) filteredIdx.push(i);
+    }
+    cluster.clearLayers();
+    const batch = filteredIdx.map(i => allMarkers[i]);
+    cluster.addLayers(batch);
+    updateCounts();
+    exportBtn.disabled = filteredIdx.length === 0;
+
+    if (batch.length) {
+      const group = L.featureGroup(batch);
+      map.fitBounds(group.getBounds().pad(0.2), { maxZoom: 10 });
+    }
+  }
+
+  function clearFilters() {
+    for (const sel of [selUF, selMunicipio, selCategoriaAdm, selLocalizacao, selLocDif,
+                       selRestricao, selDepAdm, selCatPriv, selConveniada, selRegul, selPorte]) {
+      sel.value = "";
+    }
+    for (const sel of [selEtapas, selOfertas]) {
+      for (const o of sel.options) o.selected = false;
+    }
+    txtSearch.value = "";
+    applyFilters();
+  }
+
+  function updateCounts() {
+    const shown = filteredIdx.length;
+    const total = allMarkers.filter(Boolean).length;
+    countsEl.textContent = shown || total ? `${shown.toLocaleString()} de ${total.toLocaleString()} pontos` : '';
+  }
+
+  // --- CSV loader (PapaParse streaming) ---
+  csvFile.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    allRows = []; allMarkers = []; filteredIdx = [];
+    cluster.clearLayers(); setProgress('Carregando CSV…');
+    exportBtn.disabled = true;
+
+    let total=0, kept=0, lastUI=0;
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true, chunkSize: 1024*1024,
+      chunk: ({data}) => {
+        const now = performance.now();
+        for (const row of data) {
+          total++;
+          const m = buildMarker(row, allRows.length);
+          allRows.push(row);
+          if (m) { allMarkers.push(m); kept++; } else { allMarkers.push(null); }
+        }
+        if (now - lastUI > 200) {
+          setProgress(`Lidos: ${total.toLocaleString()} | com coordenadas: ${kept.toLocaleString()}`);
+          lastUI = now;
+        }
+      },
+      complete: () => {
+        setProgress(`CSV concluído. Total: ${total.toLocaleString()} | com coordenadas: ${kept.toLocaleString()}`);
+        rebuildDropdowns();
+        filteredIdx = allMarkers.map((_, i) => i).filter(i => allMarkers[i]);
+        cluster.addLayers(filteredIdx.map(i => allMarkers[i]));
+        updateCounts();
+        exportBtn.disabled = filteredIdx.length === 0;
+        if (kept) {
+          const group = L.featureGroup(filteredIdx.map(i => allMarkers[i]));
+          map.fitBounds(group.getBounds().pad(0.2), { maxZoom: 6 });
+        }
+      },
+      error: (err) => { console.error(err); setProgress('Erro ao ler CSV: ' + err); }
+    });
+  });
+
+  // --- Export filtered rows to CSV ---
+  exportBtn.addEventListener('click', () => {
+    if (!filteredIdx.length) return;
+    const headers = Object.values(COLS);
+    const rows = filteredIdx.map(i => {
+      const r = allRows[i];
+      const out = {};
+      headers.forEach(h => { out[h] = r[h] ?? ''; });
+      return out;
+    });
+
+    if (rows.length > 50000 && !confirm(`Exportar ${rows.length.toLocaleString()} linhas? Pode demorar.`)) {
+      return;
+    }
+
+    const csv = Papa.unparse(rows, { columns: headers });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `escolas_filtradas_${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+  });
+
+  // --- Municipalities GeoJSON loader ---
+  document.getElementById('toggleMun').addEventListener('click', () => setMunVisibility(!geoVisible));
+  document.getElementById('munLabels').addEventListener('change', () => setMunLabels(chkMunLabels.checked));
+
+  geoFile.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const gj = JSON.parse(reader.result);
+        if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
+        if (geoLabels) { map.removeLayer(geoLabels); geoLabels = null; }
+
+        geoLayer = L.geoJSON(gj, {
+          style: () => ({ color:'#2b7cff', weight:.6, opacity:.7, fillColor:'#2b7cff', fillOpacity:.05 }),
+          onEachFeature: (f, layer) => {
+            const p = f.properties || {};
+            const name = p.NOME || p.NM_MUN || p.nome || p.name || 'Município';
+            layer.bindTooltip(name, { sticky: true, direction: 'auto' });
+          }
+        }).addTo(map);
+
+        geoVisible = true;
+        setMunLabels(chkMunLabels.checked);
+
+        const b = geoLayer.getBounds();
+        if (b.isValid() && !filteredIdx.length) map.fitBounds(b.pad(0.1));
+      } catch (err) { alert('GeoJSON inválido: ' + err); }
+    };
+    reader.readAsText(file);
+  });
+
+  function setMunVisibility(vis) {
+    geoVisible = !!vis;
+    if (!geoLayer) return;
+    if (vis) {
+      if (!map.hasLayer(geoLayer)) map.addLayer(geoLayer);
+      if (chkMunLabels.checked) setMunLabels(true);
+    } else {
+      if (map.hasLayer(geoLayer)) map.removeLayer(geoLayer);
+      setMunLabels(false);
+    }
+  }
+
+  function setMunLabels(on) {
+    if (!geoLayer) return;
+    if (on && geoVisible) {
+      if (geoLabels) { map.removeLayer(geoLabels); geoLabels = null; }
+      const labels = [];
+      geoLayer.eachLayer(l => {
+        try {
+          const f = l.feature; const p = f?.properties || {};
+          const name = p.NOME || p.NM_MUN || p.nome || p.name || '';
+          const c = centroidOf(l);
+          if (name && c) {
+            const m = L.marker(c, { opacity: 0 });
+            m.bindTooltip(name, { permanent: true, direction: 'center', className: 'mun-label' });
+            labels.push(m);
+          }
+        } catch(_){}
+      });
+      geoLabels = L.layerGroup(labels).addTo(map);
+    } else {
+      if (geoLabels) { map.removeLayer(geoLabels); geoLabels = null; }
+    }
+  }
+
+  function centroidOf(layer) {
+    const b = layer.getBounds();
+    return b && b.isValid() ? b.getCenter() : null;
+  }
+
+  // --- Filter controls events ---
+  btnApply.addEventListener('click', applyFilters);
+  btnClear.addEventListener('click', clearFilters);
+  document.getElementById('filterText').addEventListener('keydown', e => { if (e.key === 'Enter') applyFilters(); });
+
+  // Initial hint
+  setProgress('Selecione um CSV para começar. Você pode carregar o GeoJSON de municípios também.');
+</script>
+</body>
+</html>
